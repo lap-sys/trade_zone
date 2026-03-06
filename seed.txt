@@ -1,0 +1,24 @@
+closeness to ichimoku components
+closeness to channel borders
+fib proportion
+elliot wave awareness
+oscillator
+volume regime
+
+The target trader agent should observe by default.
+He must enter positions with high confidence in trade zones.
+anticipate breakout.
+market make range periods.
+
+attenion layers
+what about incremental features injection. ex:first: volume and volatility to spot regime, then other features to refine...? advise.
+
+
+market ambiance:
+websocket listening on order book and live trade.
+market excitation, average trade sizes (buys and sells)
+volume per second (debit)
+
+
+
+

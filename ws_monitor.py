@@ -1,0 +1,153 @@
+"""Hyperliquid WebSocket Market Ambiance Monitor.
+Streams trades and L2 orderbook, computes rolling metrics (1m, 5m, 15m):
+- Avg trade size buy/sell ($)
+- Avg L1-5 bid/ask depth ($)
+Stores every minute snapshot to MongoDB Atlas.
+"""
+import asyncio, json, os, time, signal, sys
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+import websockets
+from dotenv import load_dotenv
+from pymongo import MongoClient
+
+load_dotenv()
+
+WS_URL = "wss://api.hyperliquid.xyz/ws"
+COIN = sys.argv[1] if len(sys.argv) > 1 else "BTC"
+WINDOWS = {"1m": 60, "5m": 300, "15m": 900}
+PRINT_INTERVAL = 60  # seconds between prints & DB writes
+
+# --- MongoDB setup ---
+_client = MongoClient(os.environ["DB_URI"])
+db = _client["trade_zone"]
+col = db["ambiance"]
+col.create_index([("ts", 1), ("coin", 1)])
+
+
+@dataclass
+class Trade:
+    ts: float; side: str; size: float; price: float
+
+@dataclass
+class BookSnap:
+    ts: float; bids: list; asks: list  # [(price, size), ...]
+
+
+class Monitor:
+    """Aggregates trades and book snapshots; computes stats for any window."""
+
+    def __init__(self, max_window: int = max(WINDOWS.values())):
+        self.max_window = max_window
+        self.trades: deque[Trade] = deque()
+        self.books: deque[BookSnap] = deque()
+
+    def _prune(self):
+        cutoff = time.time() - self.max_window
+        while self.trades and self.trades[0].ts < cutoff:
+            self.trades.popleft()
+        while self.books and self.books[0].ts < cutoff:
+            self.books.popleft()
+
+    def add_trade(self, t: Trade):
+        self.trades.append(t)
+
+    def add_book(self, b: BookSnap):
+        self.books.append(b)
+
+    def stats(self, window: int) -> dict:
+        """Return the 4 ambiance metrics for a given window (seconds)."""
+        now = time.time()
+        self._prune()
+        cutoff = now - window
+
+        buys = [t for t in self.trades if t.ts >= cutoff and t.side == "buy"]
+        sells = [t for t in self.trades if t.ts >= cutoff and t.side == "sell"]
+        snaps = [s for s in self.books if s.ts >= cutoff]
+
+        avg_buy = sum(t.size * t.price for t in buys) / len(buys) if buys else 0
+        avg_sell = sum(t.size * t.price for t in sells) / len(sells) if sells else 0
+
+        n = len(snaps)
+        avg_bid = avg_ask = 0.0
+        if n:
+            avg_bid = sum(sum(p * s for p, s in snap.bids[:5]) for snap in snaps) / n
+            avg_ask = sum(sum(p * s for p, s in snap.asks[:5]) for snap in snaps) / n
+
+        return {
+            "avg_buy_usd": round(avg_buy, 2),
+            "avg_sell_usd": round(avg_sell, 2),
+            "avg_bid_depth": round(avg_bid, 2),
+            "avg_ask_depth": round(avg_ask, 2),
+        }
+
+    def all_stats(self) -> dict:
+        """Return stats for every configured window."""
+        return {label: self.stats(sec) for label, sec in WINDOWS.items()}
+
+
+def record(coin: str, stats: dict):
+    """Print + insert one document with all window metrics."""
+    now = datetime.now(timezone.utc)
+    ts_str = now.strftime("%H:%M:%S")
+
+    doc = {"ts": now, "coin": coin}
+    for label, s in stats.items():
+        doc[label] = s
+        print(f"  [{ts_str}] {label}  buy=${s['avg_buy_usd']:,.0f}  sell=${s['avg_sell_usd']:,.0f}"
+              f"  bid=${s['avg_bid_depth']:,.0f}  ask=${s['avg_ask_depth']:,.0f}", flush=True)
+
+    col.insert_one(doc)
+    print(f"  → saved to MongoDB\n", flush=True)
+
+
+async def run(coin: str):
+    mon = Monitor()
+
+    async def listen():
+        while True:
+            try:
+                async with websockets.connect(WS_URL) as ws:
+                    for sub in [
+                        {"method": "subscribe", "subscription": {"type": "trades", "coin": coin}},
+                        {"method": "subscribe", "subscription": {"type": "l2Book", "coin": coin}},
+                    ]:
+                        await ws.send(json.dumps(sub))
+                    async for raw in ws:
+                        msg = json.loads(raw)
+                        ch = msg.get("channel")
+                        data = msg.get("data")
+                        if ch == "trades" and isinstance(data, list):
+                            for t in data:
+                                side = "buy" if t["side"] == "B" else "sell"
+                                mon.add_trade(Trade(
+                                    ts=time.time(), side=side,
+                                    size=float(t["sz"]), price=float(t["px"]),
+                                ))
+                        elif ch == "l2Book" and isinstance(data, dict):
+                            levels = data.get("levels") or data.get("book", {}).get("levels", [])
+                            if len(levels) >= 2:
+                                bids = [(float(l["px"]), float(l["sz"])) for l in levels[0][:5]]
+                                asks = [(float(l["px"]), float(l["sz"])) for l in levels[1][:5]]
+                                mon.add_book(BookSnap(ts=time.time(), bids=bids, asks=asks))
+            except (websockets.ConnectionClosed, Exception) as e:
+                print(f"[ws] reconnecting after: {e}")
+                await asyncio.sleep(2)
+
+    async def writer():
+        while True:
+            await asyncio.sleep(PRINT_INTERVAL)
+            record(coin, mon.all_stats())
+
+    await asyncio.gather(listen(), writer())
+
+
+if __name__ == "__main__":
+    print(f"═══ {COIN} Ambiance Monitor (1m/5m/15m → MongoDB) ═══", flush=True)
+    loop = asyncio.new_event_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: sys.exit(0))
+    loop.run_until_complete(run(COIN))
+
