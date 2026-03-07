@@ -58,7 +58,7 @@ class Monitor:
         self.books.append(b)
 
     def stats(self, window: int) -> dict:
-        """Return the 4 ambiance metrics for a given window (seconds)."""
+        """Return ambiance metrics for a given window (seconds)."""
         now = time.time()
         self._prune()
         cutoff = now - window
@@ -71,16 +71,19 @@ class Monitor:
         avg_sell = sum(t.size * t.price for t in sells) / len(sells) if sells else 0
 
         n = len(snaps)
-        avg_bid = avg_ask = 0.0
+        avg_bid = avg_ask = mid_price = 0.0
         if n:
             avg_bid = sum(sum(p * s for p, s in snap.bids[:5]) for snap in snaps) / n
             avg_ask = sum(sum(p * s for p, s in snap.asks[:5]) for snap in snaps) / n
+            mid_price = sum((snap.bids[0][0] + snap.asks[0][0]) / 2
+                            for snap in snaps if snap.bids and snap.asks) / n
 
         return {
             "avg_buy_usd": round(avg_buy, 2),
             "avg_sell_usd": round(avg_sell, 2),
             "avg_bid_depth": round(avg_bid, 2),
             "avg_ask_depth": round(avg_ask, 2),
+            "mid_price": round(mid_price, 2),
         }
 
     def all_stats(self) -> dict:

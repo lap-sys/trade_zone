@@ -22,6 +22,7 @@ export async function GET(req: Request) {
 
   const data = docs.map((d) => ({
     ts: d.ts,
+    mid_price: d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0,
     "1m": d["1m"],
     "5m": d["5m"],
     "15m": d["15m"],
