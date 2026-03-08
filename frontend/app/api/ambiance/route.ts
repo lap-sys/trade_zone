@@ -3,6 +3,31 @@ import clientPromise from "@/lib/mongodb";
 
 export const dynamic = "force-dynamic";
 
+/** Fetch 1m candles from Hyperliquid for a time range */
+async function fetchCandles(coin: string, startMs: number, endMs: number) {
+  try {
+    const res = await fetch("https://api.hyperliquid.xyz/info", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        type: "candleSnapshot",
+        req: { coin, interval: "1m", startTime: startMs, endTime: endMs },
+      }),
+    });
+    const candles = await res.json();
+    // Build map: open_time_ms → close price
+    const map = new Map<number, number>();
+    for (const c of candles) {
+      // Round to nearest minute for matching
+      const min = Math.floor(c.t / 60000) * 60000;
+      map.set(min, parseFloat(c.c));
+    }
+    return map;
+  } catch {
+    return new Map<number, number>();
+  }
+}
+
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const coin = searchParams.get("coin") || "BTC";
@@ -17,16 +42,28 @@ export async function GET(req: Request) {
     .limit(limit)
     .toArray();
 
-  // Return chronological order
   docs.reverse();
 
-  const data = docs.map((d) => ({
-    ts: d.ts,
-    mid_price: d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0,
-    "1m": d["1m"],
-    "5m": d["5m"],
-    "15m": d["15m"],
-  }));
+  // Fetch candles covering the data range
+  let candleMap = new Map<number, number>();
+  if (docs.length > 0) {
+    const startMs = new Date(docs[0].ts).getTime();
+    const endMs = new Date(docs[docs.length - 1].ts).getTime();
+    candleMap = await fetchCandles(coin, startMs, endMs + 60000);
+  }
+
+  const data = docs.map((d) => {
+    const tsMs = Math.floor(new Date(d.ts).getTime() / 60000) * 60000;
+    const stored = d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0;
+    const mid_price = stored > 0 ? stored : (candleMap.get(tsMs) ?? 0);
+    return {
+      ts: d.ts,
+      mid_price,
+      "1m": d["1m"],
+      "5m": d["5m"],
+      "15m": d["15m"],
+    };
+  });
 
   return NextResponse.json(data);
 }
