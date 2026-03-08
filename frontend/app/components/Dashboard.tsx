@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState, useCallback } from "react";
 import {
-  LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip,
+  LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid, Legend, ReferenceLine,
 } from "recharts";
 
@@ -9,6 +9,7 @@ type WindowData = {
   avg_buy_usd: number; avg_sell_usd: number;
   avg_bid_depth: number; avg_ask_depth: number;
   mid_price?: number;
+  buy_vol_per_min?: number; sell_vol_per_min?: number;
 };
 type Row = { ts: string; mid_price: number; "1m": WindowData; "5m": WindowData; "15m": WindowData };
 
@@ -106,7 +107,22 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </ChartBox>
 
-          {/* 2. Trade Sizes Buy vs Sell */}
+          {/* 2. Volume / Min */}
+          <ChartBox title={`Volume / Min — ${activeWindow}`}>
+            <ResponsiveContainer width="100%" height={160}>
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1a1a1a" />
+                <XAxis dataKey="ts" tick={TICK} interval="preserveStartEnd" hide />
+                <YAxis tickFormatter={fmt} tick={TICK} width={55} />
+                <Tooltip contentStyle={TIP} formatter={(v: number) => fmt(Number(v))} />
+                <Legend wrapperStyle={{ fontSize: 10 }} />
+                <Bar dataKey="buy_vol_per_min" name="Buy Vol/min" fill="#22c55e" opacity={0.7} />
+                <Bar dataKey="sell_vol_per_min" name="Sell Vol/min" fill="#ef4444" opacity={0.7} />
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartBox>
+
+          {/* 3. Trade Sizes Buy vs Sell */}
           <ChartBox title={`Avg Trade Size — ${activeWindow}`}>
             <ResponsiveContainer width="100%" height={160}>
               <LineChart data={chartData}>

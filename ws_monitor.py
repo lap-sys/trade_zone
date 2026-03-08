@@ -70,6 +70,11 @@ class Monitor:
         avg_buy = sum(t.size * t.price for t in buys) / len(buys) if buys else 0
         avg_sell = sum(t.size * t.price for t in sells) / len(sells) if sells else 0
 
+        # Rolling volume per minute (total notional / window minutes)
+        window_min = window / 60
+        buy_vol = sum(t.size * t.price for t in buys) / window_min if window_min else 0
+        sell_vol = sum(t.size * t.price for t in sells) / window_min if window_min else 0
+
         n = len(snaps)
         avg_bid = avg_ask = mid_price = 0.0
         if n:
@@ -84,6 +89,8 @@ class Monitor:
             "avg_bid_depth": round(avg_bid, 2),
             "avg_ask_depth": round(avg_ask, 2),
             "mid_price": round(mid_price, 2),
+            "buy_vol_per_min": round(buy_vol, 2),
+            "sell_vol_per_min": round(sell_vol, 2),
         }
 
     def all_stats(self) -> dict:
