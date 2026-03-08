@@ -56,12 +56,17 @@ export async function GET(req: Request) {
     const tsMs = Math.floor(new Date(d.ts).getTime() / 60000) * 60000;
     const stored = d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0;
     const mid_price = stored > 0 ? stored : (candleMap.get(tsMs) ?? 0);
+    const patch = (w: any) => w ? {
+      ...w,
+      buy_vol_per_min: w.buy_vol_per_min ?? 0,
+      sell_vol_per_min: w.sell_vol_per_min ?? 0,
+    } : w;
     return {
       ts: d.ts,
       mid_price,
-      "1m": d["1m"],
-      "5m": d["5m"],
-      "15m": d["15m"],
+      "1m": patch(d["1m"]),
+      "5m": patch(d["5m"]),
+      "15m": patch(d["15m"]),
     };
   });
 
