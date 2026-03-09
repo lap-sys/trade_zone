@@ -7,6 +7,22 @@ export async function GET(req: Request) {
   const coin = searchParams.get("coin") || "BTC";
 
   try {
+    // xyz: perps aren't in allMids — use l2Book mid price instead
+    if (coin.startsWith("xyz:")) {
+      const res = await fetch("https://api.hyperliquid.xyz/info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "l2Book", coin }),
+      });
+      const book = await res.json();
+      const levels = book?.levels;
+      if (levels?.[0]?.[0] && levels?.[1]?.[0]) {
+        const mid = (parseFloat(levels[0][0].px) + parseFloat(levels[1][0].px)) / 2;
+        return NextResponse.json({ coin, price: mid });
+      }
+      return NextResponse.json({ coin, price: 0 });
+    }
+    // Standard perps — use allMids
     const res = await fetch("https://api.hyperliquid.xyz/info", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
