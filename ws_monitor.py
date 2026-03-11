@@ -2,12 +2,16 @@
 Streams trades and L2 orderbook, computes rolling metrics (1m, 5m, 15m):
 - Avg trade size buy/sell ($)
 - Avg L1-5 bid/ask depth ($)
-Stores every minute snapshot to MongoDB Atlas.
+- Buy/sell volume per minute
+Monitors multiple assets concurrently from assets_config.json.
+Usage: python3 ws_monitor.py [COIN]  # single coin override
+       python3 ws_monitor.py         # all coins from config
 """
 import asyncio, json, os, time, signal, sys
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 import websockets
 from dotenv import load_dotenv
@@ -16,15 +20,28 @@ from pymongo import MongoClient
 load_dotenv()
 
 WS_URL = "wss://api.hyperliquid.xyz/ws"
-COIN = sys.argv[1] if len(sys.argv) > 1 else "BTC"
 WINDOWS = {"1m": 60, "5m": 300, "15m": 900}
 PRINT_INTERVAL = 60  # seconds between prints & DB writes
+CONFIG_PATH = Path(__file__).parent / "assets_config.json"
 
 # --- MongoDB setup ---
 _client = MongoClient(os.environ["DB_URI"])
 db = _client["trade_zone"]
 col = db["ambiance"]
 col.create_index([("ts", 1), ("coin", 1)])
+
+
+def load_coins() -> list[str]:
+    """Load coin symbols from config. CLI arg overrides."""
+    if len(sys.argv) > 1:
+        return [sys.argv[1]]
+    with open(CONFIG_PATH) as f:
+        cfg = json.load(f)
+    coins = []
+    for cat in cfg["categories"].values():
+        for asset in cat.values():
+            coins.append(asset["symbol"])
+    return coins
 
 
 @dataclass
@@ -113,7 +130,8 @@ def record(coin: str, stats: dict):
     print(f"  → saved to MongoDB\n", flush=True)
 
 
-async def run(coin: str):
+async def run_coin(coin: str):
+    """Monitor a single coin: WS listener + periodic DB writer."""
     mon = Monitor()
 
     async def listen():
@@ -143,21 +161,38 @@ async def run(coin: str):
                                 asks = [(float(l["px"]), float(l["sz"])) for l in levels[1][:5]]
                                 mon.add_book(BookSnap(ts=time.time(), bids=bids, asks=asks))
             except (websockets.ConnectionClosed, Exception) as e:
-                print(f"[ws] reconnecting after: {e}")
+                print(f"[{coin} ws] reconnecting after: {e}")
                 await asyncio.sleep(2)
 
     async def writer():
         while True:
             await asyncio.sleep(PRINT_INTERVAL)
-            record(coin, mon.all_stats())
+            try:
+                record(coin, mon.all_stats())
+            except Exception as e:
+                print(f"[{coin} writer] error: {e}", flush=True)
 
     await asyncio.gather(listen(), writer())
 
 
+async def run_all(coins: list[str]):
+    """Run monitors for all coins concurrently. Each coin is isolated."""
+    async def safe_run(coin: str):
+        while True:
+            try:
+                await run_coin(coin)
+            except Exception as e:
+                print(f"[{coin}] crashed, restarting in 5s: {e}", flush=True)
+                await asyncio.sleep(5)
+
+    await asyncio.gather(*(safe_run(c) for c in coins))
+
+
 if __name__ == "__main__":
-    print(f"═══ {COIN} Ambiance Monitor (1m/5m/15m → MongoDB) ═══", flush=True)
+    coins = load_coins()
+    print(f"═══ Ambiance Monitor ({', '.join(coins)}) → MongoDB ═══", flush=True)
     loop = asyncio.new_event_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: sys.exit(0))
-    loop.run_until_complete(run(COIN))
+    loop.run_until_complete(run_all(coins))
 
