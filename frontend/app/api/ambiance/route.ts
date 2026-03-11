@@ -52,10 +52,14 @@ export async function GET(req: Request) {
     candleMap = await fetchCandles(coin, startMs, endMs + 60000);
   }
 
+  // Price priority: candle close > stored mid_price. Forward-fill gaps.
+  let lastPrice = 0;
   const data = docs.map((d) => {
     const tsMs = Math.floor(new Date(d.ts).getTime() / 60000) * 60000;
+    const candle = candleMap.get(tsMs) ?? 0;
     const stored = d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0;
-    const mid_price = stored > 0 ? stored : (candleMap.get(tsMs) ?? 0);
+    let mid_price = candle > 0 ? candle : stored > 0 ? stored : lastPrice;
+    if (mid_price > 0) lastPrice = mid_price;
     const patch = (w: any) => w ? {
       ...w,
       buy_vol_per_min: w.buy_vol_per_min ?? 0,
