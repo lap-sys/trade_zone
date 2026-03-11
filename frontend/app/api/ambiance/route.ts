@@ -3,8 +3,8 @@ import clientPromise from "@/lib/mongodb";
 
 export const dynamic = "force-dynamic";
 
-/** Fetch 1m candles from Hyperliquid for a time range */
-async function fetchCandles(coin: string, startMs: number, endMs: number) {
+/** Fetch 1m candles from Hyperliquid. Returns sorted array of {t, price}. */
+async function fetchCandles(coin: string, startMs: number, endMs: number): Promise<{t: number; price: number}[]> {
   try {
     const res = await fetch("https://api.hyperliquid.xyz/info", {
       method: "POST",
@@ -15,17 +15,26 @@ async function fetchCandles(coin: string, startMs: number, endMs: number) {
       }),
     });
     const candles = await res.json();
-    // Build map: open_time_ms → close price
-    const map = new Map<number, number>();
-    for (const c of candles) {
-      // Round to nearest minute for matching
-      const min = Math.floor(c.t / 60000) * 60000;
-      map.set(min, parseFloat(c.c));
-    }
-    return map;
+    return candles
+      .map((c: any) => ({ t: Number(c.t), price: parseFloat(c.c) }))
+      .filter((c: any) => c.price > 0)
+      .sort((a: any, b: any) => a.t - b.t);
   } catch {
-    return new Map<number, number>();
+    return [];
   }
+}
+
+/** Find nearest candle price for a given timestamp via binary search. */
+function nearestCandlePrice(candles: {t: number; price: number}[], tsMs: number): number {
+  if (!candles.length) return 0;
+  let lo = 0, hi = candles.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (candles[mid].t < tsMs) lo = mid + 1; else hi = mid;
+  }
+  // Compare lo and lo-1 to find closest
+  if (lo > 0 && Math.abs(candles[lo - 1].t - tsMs) <= Math.abs(candles[lo].t - tsMs)) lo--;
+  return candles[lo].price;
 }
 
 export async function GET(req: Request) {
@@ -44,35 +53,27 @@ export async function GET(req: Request) {
 
   docs.reverse();
 
-  // Fetch candles covering the data range
-  let candleMap = new Map<number, number>();
+  // Fetch candles covering the data range — price comes ONLY from candles
+  let candles: {t: number; price: number}[] = [];
   if (docs.length > 0) {
     const startMs = new Date(docs[0].ts).getTime();
     const endMs = new Date(docs[docs.length - 1].ts).getTime();
-    candleMap = await fetchCandles(coin, startMs, endMs + 60000);
+    candles = await fetchCandles(coin, startMs - 60000, endMs + 60000);
   }
 
-  // Price priority: candle close > stored mid_price. Forward-fill gaps.
-  let lastPrice = 0;
-  const data = docs.map((d) => {
-    const tsMs = Math.floor(new Date(d.ts).getTime() / 60000) * 60000;
-    const candle = candleMap.get(tsMs) ?? 0;
-    const stored = d["5m"]?.mid_price ?? d["1m"]?.mid_price ?? 0;
-    let mid_price = candle > 0 ? candle : stored > 0 ? stored : lastPrice;
-    if (mid_price > 0) lastPrice = mid_price;
-    const patch = (w: any) => w ? {
-      ...w,
-      buy_vol_per_min: w.buy_vol_per_min ?? 0,
-      sell_vol_per_min: w.sell_vol_per_min ?? 0,
-    } : w;
-    return {
-      ts: d.ts,
-      mid_price,
-      "1m": patch(d["1m"]),
-      "5m": patch(d["5m"]),
-      "15m": patch(d["15m"]),
-    };
-  });
+  const patch = (w: any) => w ? {
+    ...w,
+    buy_vol_per_min: w.buy_vol_per_min ?? 0,
+    sell_vol_per_min: w.sell_vol_per_min ?? 0,
+  } : w;
+
+  const data = docs.map((d) => ({
+    ts: d.ts,
+    mid_price: nearestCandlePrice(candles, new Date(d.ts).getTime()),
+    "1m": patch(d["1m"]),
+    "5m": patch(d["5m"]),
+    "15m": patch(d["15m"]),
+  }));
 
   return NextResponse.json(data);
 }
