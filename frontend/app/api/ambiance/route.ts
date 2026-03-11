@@ -67,13 +67,16 @@ export async function GET(req: Request) {
     sell_vol_per_min: w.sell_vol_per_min ?? 0,
   } : w;
 
-  const data = docs.map((d) => ({
-    ts: d.ts,
-    mid_price: nearestCandlePrice(candles, new Date(d.ts).getTime()),
-    "1m": patch(d["1m"]),
-    "5m": patch(d["5m"]),
-    "15m": patch(d["15m"]),
-  }));
+  // Map docs to candle prices, then drop any with price=0 (gaps where no candle exists)
+  const data = docs
+    .map((d) => ({
+      ts: d.ts,
+      mid_price: nearestCandlePrice(candles, new Date(d.ts).getTime()),
+      "1m": patch(d["1m"]),
+      "5m": patch(d["5m"]),
+      "15m": patch(d["15m"]),
+    }))
+    .filter((d) => d.mid_price > 0);
 
   return NextResponse.json(data);
 }
